@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tetris AI 课程设计</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Tetris AI</h1>
+          <p>HTML5 游戏引擎 · WebSocket JSON AI 接口 · 200 局自动评测</p>
+        </div>
+        <div class="status-strip" aria-live="polite">
+          <span id="gameStatus">未开始</span>
+          <span id="socketStatus">WS 未连接</span>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <aside class="left-rail">
+          <div class="control-band">
+            <button id="newGameBtn" class="primary-btn" type="button">新游戏</button>
+            <button id="pauseBtn" type="button">暂停</button>
+          </div>
+
+          <label class="field">
+            <span>运行模式</span>
+            <select id="modeSelect">
+              <option value="human">人类玩家</option>
+              <option value="ws-ai">AI 算法模式（WebSocket）</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>AI 搜索深度</span>
+            <select id="depthSelect">
+              <option value="1" selected>1 层：推荐评测</option>
+              <option value="2">2 层：向前看一块</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>AI 间隔 <output id="aiDelayValue">80 ms</output></span>
+            <input id="aiDelay" type="range" min="0" max="320" value="80" step="20" />
+          </label>
+
+          <label class="field">
+            <span>随机种子</span>
+            <input id="seedInput" type="text" value="course-design-2026" />
+          </label>
+
+          <div class="control-band">
+            <button id="connectBtn" type="button">连接 AI 服务</button>
+            <button id="exportLogBtn" type="button">导出记录</button>
+          </div>
+
+          <div class="metric-grid">
+            <div><strong id="scoreValue">0</strong><span>得分</span></div>
+            <div><strong id="linesValue">0</strong><span>消行</span></div>
+            <div><strong id="levelValue">1</strong><span>等级</span></div>
+            <div><strong id="piecesValue">0</strong><span>方块</span></div>
+          </div>
+        </aside>
+
+        <section class="game-stage" aria-label="Tetris game area">
+          <canvas id="boardCanvas" width="360" height="720"></canvas>
+          <div class="stage-footer">
+            <span>← → 移动</span>
+            <span>↑ 旋转</span>
+            <span>↓ 加速</span>
+            <span>Space 硬降</span>
+          </div>
+        </section>
+
+        <aside class="right-rail">
+          <section class="side-panel">
+            <div class="panel-title">
+              <h2>Next</h2>
+              <span id="queueLabel">7-bag</span>
+            </div>
+            <canvas id="nextCanvas" width="240" height="190"></canvas>
+          </section>
+
+          <section class="side-panel">
+            <div class="panel-title">
+              <h2>AI 决策</h2>
+              <span id="aiSource">WebSocket JSON 接口</span>
+            </div>
+            <dl class="decision-list">
+              <div><dt>目标列</dt><dd id="moveX">-</dd></div>
+              <div><dt>旋转</dt><dd id="moveRotation">-</dd></div>
+              <div><dt>评分</dt><dd id="moveScore">-</dd></div>
+              <div><dt>特征</dt><dd id="moveFeatures">-</dd></div>
+            </dl>
+          </section>
+
+          <section class="side-panel">
+            <div class="panel-title">
+              <h2>200 局评测</h2>
+              <span id="benchmarkState">待运行</span>
+            </div>
+            <div class="bench-controls">
+              <label class="field compact">
+                <span>局数</span>
+                <input id="benchGames" type="number" min="1" max="200" value="200" />
+              </label>
+              <button id="benchmarkBtn" class="primary-btn" type="button">开始评测</button>
+            </div>
+            <pre id="benchmarkOutput">平均消行、最高消行、最低消行和标准差会显示在这里。</pre>
+          </section>
+        </aside>
+      </section>
+
+      <div id="gameOverOverlay" class="game-over-overlay hidden" role="dialog" aria-modal="true">
+        <div class="game-over-panel">
+          <strong>游戏结束</strong>
+          <span id="gameOverSummary">消行 0 · 得分 0</span>
+          <button id="restartOverlayBtn" class="primary-btn" type="button">再来一局</button>
+        </div>
+      </div>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

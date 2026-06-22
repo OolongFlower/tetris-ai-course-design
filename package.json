@@ -1,0 +1,11 @@
+{
+  "name": "tetris-ai-course-design",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python -m http.server 5173",
+    "ai": "python ai_server.py",
+    "test": "node scripts/smoke-test.mjs"
+  }
+}
