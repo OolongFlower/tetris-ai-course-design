@@ -53,13 +53,19 @@ SHAPES = {
 }
 
 WEIGHTS = {
-    "landingHeight": -4.500158825082766,
-    "erodedPieceCells": 3.4181268101392694,
-    "rowTransitions": -3.2178882868487753,
-    "columnTransitions": -9.348695305445199,
-    "holes": -7.899265427351652,
-    "wells": -3.3855972247263626,
+    "landingHeight": -2,
+    "erodedPieceCells": 8,
+    "completeLines": 3,
+    "rowTransitions": -1.2,
+    "columnTransitions": -2.5,
+    "holes": -10,
+    "wells": -1,
+    "maxHeight": -4,
+    "aggregateHeight": -0.2,
+    "bumpiness": -0.4,
 }
+
+AI_VERSION = "10x10-tuned-v2"
 
 
 def unique_rotations(piece_type):
@@ -287,6 +293,7 @@ def choose_move(message):
         "features": best["features"],
         "actions": build_actions(current, placement),
         "source": f"python-websocket-depth-{depth}",
+        "aiVersion": AI_VERSION,
     }
 
 

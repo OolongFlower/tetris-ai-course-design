@@ -1,5 +1,5 @@
 import { TetrisGame } from "./tetrisCore.js";
-import { TetrisAI } from "./ai.js";
+import { AI_VERSION, TetrisAI } from "./ai.js?v=10x10-tuned-v2";
 import { drawBoard, drawNextQueue, setupCanvas } from "./renderer.js";
 import { AiSocketClient } from "./wsClient.js";
 
@@ -366,6 +366,7 @@ function summarizeBenchmark(results, final, canceled = false) {
     `最高分：${max}    最低分：${min}`,
     `平均消行：${avgLines.toFixed(4)}    平均方块数：${avgPieces.toFixed(2)}`,
     `预算结束：${capped}/${lines.length}`,
+    `AI 版本：${AI_VERSION}`,
     `规则：10×10 布局，7 种方块独立等概率刷新，消除 1 行得 1 分`,
     `说明：评测是独立批量仿真实验；WebSocket 用于演示 JSON 接口落子`,
   ].join("\n");
