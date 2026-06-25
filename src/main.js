@@ -298,7 +298,7 @@ async function runBenchmark() {
 
   for (let i = 0; i < games && !benchmarkCancel; i += 1) {
     elements.benchmarkState.textContent = `${i + 1}/${games}`;
-    const result = await playAiGameAsync(`${seed}-${i + 1}`, depth);
+    const result = await playAiGameAsync(`${seed}-${i + 1}`, depth, `${i + 1}/${games}`);
     if (result.completed) results.push(result);
     elements.benchmarkOutput.textContent = summarizeBenchmark(results, false, benchmarkCancel);
     await sleep(0);
@@ -315,11 +315,14 @@ async function runBenchmark() {
   updateModeUi();
 }
 
-async function playAiGameAsync(seed, depth) {
+async function playAiGameAsync(seed, depth, label = "") {
   const sim = new TetrisGame({ seed });
   sim.start();
   let guard = 0;
-  const maxPieces = 20000;
+  // The tuned AI rarely tops out, so a 20000-piece game would never finish in
+  // the browser. Bound each game's budget so the statistical run stays usable;
+  // depth 2 is far slower per piece, so it gets a tighter budget.
+  const maxPieces = depth >= 2 ? 3000 : 8000;
   let stopped = false;
   while (sim.status === "running" && guard < maxPieces && !benchmarkCancel) {
     for (let batch = 0; batch < 120 && sim.status === "running" && guard < maxPieces && !stopped && !benchmarkCancel; batch += 1) {
@@ -333,6 +336,10 @@ async function playAiGameAsync(seed, depth) {
       guard += 1;
     }
     if (stopped) break;
+    // Surface in-game progress so a long-surviving game does not look frozen.
+    elements.benchmarkState.textContent = label
+      ? `${label} · 本局 ${sim.pieces} 方块`
+      : `本局 ${sim.pieces} 方块`;
     await sleep(0);
   }
   return {
