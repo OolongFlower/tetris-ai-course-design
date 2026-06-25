@@ -1,5 +1,5 @@
 import { TetrisGame } from "./tetrisCore.js";
-import { AI_VERSION, TetrisAI } from "./ai.js?v=dt10-2013";
+import { AI_VERSION, TetrisAI } from "./ai.js?v=fast-worker";
 import { drawBoard, drawNextQueue, setupCanvas } from "./renderer.js";
 import { AiSocketClient } from "./wsClient.js";
 
@@ -28,6 +28,8 @@ const elements = {
   aiSource: document.querySelector("#aiSource"),
   benchmarkBtn: document.querySelector("#benchmarkBtn"),
   benchGames: document.querySelector("#benchGames"),
+  benchWorkers: document.querySelector("#benchWorkers"),
+  downloadBenchBtn: document.querySelector("#downloadBenchBtn"),
   benchmarkState: document.querySelector("#benchmarkState"),
   benchmarkOutput: document.querySelector("#benchmarkOutput"),
   gameOverOverlay: document.querySelector("#gameOverOverlay"),
@@ -44,10 +46,16 @@ let game = new TetrisGame({ seed: elements.seedInput.value });
 let lastFrame = performance.now();
 let lastAiTurn = -1;
 let aiPending = false;
-let lastDecision = null;
 let recommendation = null;
 let benchmarkRunning = false;
-let benchmarkCancel = false;
+let benchmarkWorkers = [];
+let benchmarkResults = [];
+let benchmarkCsv = "";
+let benchmarkStartedAt = 0;
+let benchmarkNextIndex = 0;
+let benchmarkCompleted = 0;
+let benchmarkStats = null;
+let benchmarkConfig = null;
 
 wsClient.onStatus = (status) => {
   const labels = {
@@ -60,13 +68,8 @@ wsClient.onStatus = (status) => {
   elements.connectBtn.textContent = status === "open" ? "断开 AI 服务" : "连接 AI 服务";
 };
 
-elements.newGameBtn.addEventListener("click", () => {
-  startNewGame();
-});
-
-elements.restartOverlayBtn.addEventListener("click", () => {
-  startNewGame();
-});
+elements.newGameBtn.addEventListener("click", startNewGame);
+elements.restartOverlayBtn.addEventListener("click", startNewGame);
 
 elements.pauseBtn.addEventListener("click", () => {
   if (game.status === "idle") game.start();
@@ -103,18 +106,21 @@ elements.exportLogBtn.addEventListener("click", () => {
     aiVersion: AI_VERSION,
     log: game.decisionLog,
   };
-  downloadText(`tetris-ai-log-${Date.now()}.json`, JSON.stringify(payload, null, 2));
+  downloadText(`tetris-ai-log-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
 });
 
 elements.benchmarkBtn.addEventListener("click", () => {
   if (benchmarkRunning) {
-    benchmarkCancel = true;
-    elements.benchmarkBtn.disabled = true;
-    elements.benchmarkBtn.textContent = "停止中";
-    elements.benchmarkState.textContent = "停止中";
-    return;
+    stopBenchmark();
+  } else {
+    runBenchmark();
   }
-  runBenchmark();
+});
+
+elements.downloadBenchBtn.addEventListener("click", () => {
+  if (!benchmarkCsv) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  downloadText(`tetris-benchmark-${stamp}.csv`, benchmarkCsv, "text/csv;charset=utf-8");
 });
 
 window.addEventListener("keydown", (event) => {
@@ -149,7 +155,6 @@ function startNewGame() {
   game.start();
   lastAiTurn = -1;
   aiPending = false;
-  lastDecision = null;
   recommendation = null;
   updateDecision(null);
   updatePauseText();
@@ -200,7 +205,6 @@ async function maybeRunAi() {
     elements.aiSource.textContent = move.error;
     game.status = "gameover";
   } else if (move && game.status === "running") {
-    lastDecision = move;
     recommendation = {
       type: state.current.type,
       rotation: move.rotation,
@@ -290,119 +294,185 @@ function updateDecision(move) {
   ].join(" ");
 }
 
-async function runBenchmark() {
+function runBenchmark() {
   if (benchmarkRunning) return;
-  if (elements.modeSelect.value === "human") {
-    elements.benchmarkState.textContent = "未开始";
-    elements.benchmarkOutput.textContent =
-      "AI 评测属于 AI 算法模式。请先切换到 AI 算法模式（WebSocket），再运行评测。";
-    return;
-  }
   benchmarkRunning = true;
-  benchmarkCancel = false;
-  elements.benchmarkBtn.disabled = true;
+  benchmarkWorkers = [];
+  benchmarkResults = [];
+  benchmarkCsv = "";
+  benchmarkNextIndex = 0;
+  benchmarkCompleted = 0;
+  benchmarkStartedAt = performance.now();
+  benchmarkStats = createBenchmarkStats();
+  benchmarkConfig = {
+    games: Math.max(1, Math.min(10000, Number(elements.benchGames.value) || 10000)),
+    workerCount: resolveWorkerCount(elements.benchWorkers.value),
+    batchSize: 1,
+    seedPrefix: elements.seedInput.value.trim() || "benchmark-10x10",
+    maxPieces: 100000,
+  };
+  benchmarkConfig.workerCount = Math.min(benchmarkConfig.workerCount, benchmarkConfig.games);
+
   elements.benchmarkBtn.textContent = "停止评测";
-  elements.benchmarkBtn.disabled = false;
+  elements.benchmarkState.textContent = "启动中";
+  elements.downloadBenchBtn.disabled = true;
+  elements.benchGames.disabled = true;
+  elements.benchWorkers.disabled = true;
   elements.modeSelect.disabled = true;
   elements.depthSelect.disabled = true;
-  elements.benchGames.disabled = true;
-  const games = Math.max(1, Math.min(10000, Number(elements.benchGames.value) || 10000));
-  const seed = elements.seedInput.value.trim() || "benchmark";
-  const results = [];
-  elements.benchmarkOutput.textContent = "";
+  updateBenchmarkOutput(false);
 
-  for (let i = 0; i < games && !benchmarkCancel; i += 1) {
-    elements.benchmarkState.textContent = `${i + 1}/${games}`;
-    const result = await playAiGameAsync(`${seed}-${i + 1}`);
-    if (result.completed) results.push(result);
-    elements.benchmarkOutput.textContent = summarizeBenchmark(results, false, benchmarkCancel);
-    await sleep(0);
+  for (let workerId = 0; workerId < benchmarkConfig.workerCount; workerId += 1) {
+    const worker = new Worker(new URL("./benchmarkWorker.js", import.meta.url), { type: "module" });
+    worker.onmessage = (event) => handleBenchmarkWorkerMessage(worker, event.data);
+    worker.onerror = (error) => {
+      elements.benchmarkOutput.textContent = `评测 Worker 出错：${error.message}`;
+      stopBenchmark();
+    };
+    benchmarkWorkers.push(worker);
+    worker.postMessage({
+      type: "init",
+      workerId,
+      seedPrefix: benchmarkConfig.seedPrefix,
+      maxPieces: benchmarkConfig.maxPieces,
+      warmupGames: 1,
+    });
   }
+}
 
-  elements.benchmarkOutput.textContent = summarizeBenchmark(results, true, benchmarkCancel);
-  elements.benchmarkState.textContent = benchmarkCancel ? "已停止" : "完成";
-  elements.benchmarkBtn.textContent = "开始评测";
+function handleBenchmarkWorkerMessage(worker, message) {
+  if (!benchmarkRunning) return;
+  if (message.type === "ready") {
+    assignBenchmarkBatch(worker);
+  } else if (message.type === "batchDone") {
+    for (const result of message.results) {
+      benchmarkResults[result.gameIndex] = result;
+      addBenchmarkResult(result);
+    }
+    benchmarkCompleted += message.results.length;
+    updateBenchmarkOutput(false);
+    assignBenchmarkBatch(worker);
+  }
+}
+
+function assignBenchmarkBatch(worker) {
+  if (!benchmarkRunning || !benchmarkConfig) return;
+  if (benchmarkNextIndex >= benchmarkConfig.games) {
+    worker.postMessage({ type: "stop" });
+    const index = benchmarkWorkers.indexOf(worker);
+    if (index >= 0) benchmarkWorkers.splice(index, 1);
+    if (benchmarkWorkers.length === 0) finishBenchmark(false);
+    return;
+  }
+  const start = benchmarkNextIndex;
+  const end = Math.min(benchmarkConfig.games, start + benchmarkConfig.batchSize);
+  benchmarkNextIndex = end;
+  worker.postMessage({ type: "run", start, end });
+}
+
+function stopBenchmark() {
+  if (!benchmarkRunning) return;
+  for (const worker of benchmarkWorkers) worker.terminate();
+  benchmarkWorkers = [];
+  finishBenchmark(true);
+}
+
+function finishBenchmark(canceled) {
   benchmarkRunning = false;
-  benchmarkCancel = false;
+  benchmarkWorkers = [];
+  benchmarkCsv = benchmarkCompleted > 0 ? makeBenchmarkCsv(benchmarkResults.filter(Boolean)) : "";
+  elements.benchmarkBtn.textContent = "开始评测";
+  elements.benchmarkState.textContent = canceled ? "已停止" : "完成";
+  elements.downloadBenchBtn.disabled = !benchmarkCsv;
+  elements.benchGames.disabled = false;
+  elements.benchWorkers.disabled = false;
   elements.modeSelect.disabled = false;
   elements.depthSelect.disabled = false;
-  elements.benchGames.disabled = false;
+  updateBenchmarkOutput(true, canceled);
   updateModeUi();
 }
 
-async function playAiGameAsync(seed) {
-  const sim = new TetrisGame({ seed });
-  sim.start();
-  let guard = 0;
-  const maxPieces = 100000;
-  let stopped = false;
-  while (sim.status === "running" && guard < maxPieces && !benchmarkCancel) {
-    for (
-      let batch = 0;
-      batch < 120 && sim.status === "running" && guard < maxPieces && !stopped && !benchmarkCancel;
-      batch += 1
-    ) {
-      const move = ai.findBestMove(sim.getState(), { mode: "dt10" });
-      if (!move) {
-        stopped = true;
-        sim.status = "gameover";
-        break;
-      }
-      if (!sim.applyMoveTarget(move)) {
-        stopped = true;
-        sim.status = "gameover";
-        break;
-      }
-      guard += 1;
-    }
-    if (stopped) break;
-    await sleep(0);
-  }
+function addBenchmarkResult(result) {
+  const stats = benchmarkStats;
+  stats.count += 1;
+  const delta = result.score - stats.mean;
+  stats.mean += delta / stats.count;
+  const delta2 = result.score - stats.mean;
+  stats.m2 += delta * delta2;
+  stats.totalPieces += result.pieces;
+  stats.totalCandidates += result.candidatePlacements ?? 0;
+  stats.capped += result.capped ? 1 : 0;
+  if (result.score < stats.min) stats.min = result.score;
+  if (result.score > stats.max) stats.max = result.score;
+}
+
+function updateBenchmarkOutput(final, canceled = false) {
+  if (!benchmarkStats || !benchmarkConfig) return;
+  const elapsed = (performance.now() - benchmarkStartedAt) / 1000;
+  const count = benchmarkStats.count;
+  const varianceValue = count > 0 ? benchmarkStats.m2 / count : 0;
+  const piecesPerSecond = elapsed > 0 ? benchmarkStats.totalPieces / elapsed : 0;
+  const candidatesPerSecond = elapsed > 0 ? benchmarkStats.totalCandidates / elapsed : 0;
+  const gamesPerSecond = elapsed > 0 ? count / elapsed : 0;
+  const remaining = gamesPerSecond > 0 ? (benchmarkConfig.games - count) / gamesPerSecond : 0;
+  const title = canceled ? "评测已停止" : final ? "评测完成" : "评测中";
+  elements.benchmarkState.textContent = canceled ? "已停止" : final ? "完成" : `${count}/${benchmarkConfig.games}`;
+  elements.benchmarkOutput.textContent = [
+    `${title}：${count}/${benchmarkConfig.games} 局`,
+    `Worker：${benchmarkConfig.workerCount}    Batch：${benchmarkConfig.batchSize}    AI：${AI_VERSION}`,
+    `均值：${count ? benchmarkStats.mean.toFixed(4) : "-"}    方差：${count ? varianceValue.toFixed(4) : "-"}`,
+    `最高分：${count ? benchmarkStats.max : "-"}    最低分：${count ? benchmarkStats.min : "-"}`,
+    `平均方块数：${count ? (benchmarkStats.totalPieces / count).toFixed(2) : "-"}    capped：${benchmarkStats.capped}/${count}`,
+    `已用时间：${formatDuration(elapsed)}    预计剩余：${final || canceled ? "0s" : formatDuration(remaining)}`,
+    `吞吐：${piecesPerSecond.toFixed(0)} pieces/s    ${candidatesPerSecond.toFixed(0)} candidates/s`,
+    `Seed 前缀：${benchmarkConfig.seedPrefix}`,
+    benchmarkCsv ? "CSV 已生成，可点击“下载 CSV”。" : "CSV 会在完成或停止后生成。",
+  ].join("\n");
+}
+
+function createBenchmarkStats() {
   return {
-    lines: sim.lines,
-    score: sim.score,
-    pieces: sim.pieces,
-    status: sim.status,
-    capped: guard >= maxPieces,
-    canceled: benchmarkCancel,
-    completed: sim.status !== "running" || guard >= maxPieces,
+    count: 0,
+    mean: 0,
+    m2: 0,
+    min: Infinity,
+    max: -Infinity,
+    totalPieces: 0,
+    totalCandidates: 0,
+    capped: 0,
   };
 }
 
-function summarizeBenchmark(results, final, canceled = false) {
-  if (results.length === 0) {
-    return canceled ? "评测已停止：尚未完成任何完整局。" : "评测准备中。";
+function makeBenchmarkCsv(results) {
+  const sorted = [...results].sort((a, b) => a.gameIndex - b.gameIndex);
+  const lines = ["gameIndex,seed,score,lines,pieces,candidatePlacements,capped,elapsedMs"];
+  for (const result of sorted) {
+    lines.push(
+      [
+        result.gameIndex,
+        result.seed,
+        result.score,
+        result.lines,
+        result.pieces,
+        result.candidatePlacements ?? 0,
+        result.capped ? 1 : 0,
+        Number(result.elapsedMs ?? 0).toFixed(3),
+      ].join(","),
+    );
   }
-  const scores = results.map((result) => result.score);
-  const lines = results.map((result) => result.lines);
-  const pieces = results.map((result) => result.pieces);
-  const avgScore = average(scores);
-  const scoreVariance = variance(scores);
-  const avgLines = average(lines);
-  const avgPieces = average(pieces);
-  const max = Math.max(...scores);
-  const min = Math.min(...scores);
-  const capped = results.filter((result) => result.capped).length;
-  const truncated = capped > 0 ? "（存在截断，不能作为正式均值）" : "";
-  return [
-    `${canceled ? "评测已停止" : final ? "评测完成" : "评测中"}：${lines.length} 局完整结果${truncated}`,
-    `分数均值：${avgScore.toFixed(4)}    分数方差：${scoreVariance.toFixed(4)}`,
-    `标准差：${stddev(scores).toFixed(4)}    最高分：${max}    最低分：${min}`,
-    `平均消行：${avgLines.toFixed(4)}    平均方块数：${avgPieces.toFixed(2)}`,
-    `预算结束：${capped}/${lines.length}`,
-    `AI 版本：${AI_VERSION}`,
-    "规则：10x10 布局，7 种方块独立等概率刷新，消除 1 行得 1 分",
-    "说明：评测是独立批量仿真实验；WebSocket 用于演示 JSON 接口。",
-  ].join("\n");
+  return `${lines.join("\n")}\n`;
+}
+
+function resolveWorkerCount(value) {
+  if (value === "auto") {
+    return Math.max(1, (navigator.hardwareConcurrency || 2) - 1);
+  }
+  return Math.max(1, Number(value) || 1);
 }
 
 function average(values) {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function stddev(values) {
-  return Math.sqrt(variance(values));
 }
 
 function variance(values) {
@@ -414,6 +484,14 @@ function variance(values) {
 function fmt(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return Number(value).toFixed(0);
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes}m ${rest}s`;
 }
 
 function updateModeUi() {
@@ -431,8 +509,8 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function downloadText(filename, text) {
-  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+function downloadText(filename, text, mimeType) {
+  const blob = new Blob([text], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

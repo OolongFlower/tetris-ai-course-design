@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <h1>Tetris AI</h1>
-          <p>10x10 Tetris · WebSocket JSON AI 接口 · 10000 局统计实验</p>
+          <p>10x10 Tetris · WebSocket JSON AI 接口 · FastBoard 统计评测</p>
         </div>
         <div class="status-strip" aria-live="polite">
           <span id="gameStatus">未开始</span>
@@ -106,9 +106,21 @@
                 <span>局数</span>
                 <input id="benchGames" type="number" min="1" max="10000" value="10000" />
               </label>
-              <button id="benchmarkBtn" class="primary-btn" type="button">开始评测</button>
+              <label class="field compact">
+                <span>Worker</span>
+                <select id="benchWorkers">
+                  <option value="auto" selected>自动</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="4">4</option>
+                </select>
+              </label>
+              <div class="bench-actions">
+                <button id="benchmarkBtn" class="primary-btn" type="button">开始评测</button>
+                <button id="downloadBenchBtn" type="button" disabled>下载 CSV</button>
+              </div>
             </div>
-            <pre id="benchmarkOutput">10000 局分数均值和方差会显示在这里。</pre>
+            <pre id="benchmarkOutput">FastBoard + Web Worker 会在这里显示均值、方差、进度和用时。</pre>
           </section>
         </aside>
       </section>
@@ -122,6 +134,6 @@
       </div>
     </main>
 
-    <script type="module" src="./src/main.js?v=dt10-2013"></script>
+    <script type="module" src="./src/main.js?v=fast-worker"></script>
   </body>
 </html>

@@ -337,14 +337,25 @@ input[type="range"] {
 }
 
 .bench-controls {
-  display: flex;
-  align-items: end;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin-bottom: 12px;
 }
 
 #benchmarkBtn {
   flex: 1;
+}
+
+.bench-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.bench-actions button {
+  width: 100%;
 }
 
 pre {
