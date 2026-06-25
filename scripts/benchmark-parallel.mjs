@@ -16,18 +16,22 @@ const args = parseArgs(process.argv.slice(2));
 const games = Math.max(1, Number(args.games ?? 100));
 const profile = String(args.profile ?? "dt10-2013");
 const mode = normalizeProfile(profile);
+const engine = String(args.engine ?? "fast");
 const maxPieces = Math.max(DEFAULT_MAX_PIECES, Number(args.maxPieces ?? DEFAULT_MAX_PIECES));
 const seedPrefix = String(args.seedPrefix ?? DEFAULT_SEED_PREFIX);
 const output = args.output ? String(args.output) : null;
 const jsonOutput = args.json ? String(args.json) : output ? output.replace(/\.csv$/i, ".json") : null;
 const cpuCores = typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length;
 const workers = parseWorkers(args.workers ?? "auto", cpuCores);
-const progressEvery = Math.max(1, Number(args.progressEvery ?? 50));
+const batchSize = Math.max(1, Number(args.batchSize ?? 1));
+const warmupGames = Math.max(0, Number(args.warmupGames ?? 2));
 const quiet = Boolean(args.quiet);
+const omitScoreCsv = Boolean(args.omitScoreCsv);
 const startedAt = performance.now();
 
 const results = [];
 let completed = 0;
+let nextGameIndex = 0;
 
 await Promise.all(
   Array.from({ length: workers }, (_, workerId) => {
@@ -35,23 +39,22 @@ await Promise.all(
       const worker = new Worker(new URL("./benchmark-worker.mjs", import.meta.url), {
         workerData: {
           workerId,
-          workerCount: workers,
-          games,
           profile,
+          engine,
           maxPieces,
           seedPrefix,
-          progressEvery,
+          warmupGames,
         },
       });
+
       worker.on("message", (message) => {
-        if (message.type === "progress") {
-          completed += progressEvery;
-          if (!quiet) writeProgress(Math.min(completed, games), games);
-        } else if (message.type === "done") {
-          completed += message.completed % progressEvery;
+        if (message.type === "ready") {
+          assignNextBatch(worker, resolve);
+        } else if (message.type === "batchDone") {
           results.push(...message.results);
-          if (!quiet) writeProgress(Math.min(completed, games), games);
-          resolve();
+          completed += message.results.length;
+          if (!quiet) writeProgress(completed, games);
+          assignNextBatch(worker, resolve);
         }
       });
       worker.on("error", reject);
@@ -69,18 +72,33 @@ const report = {
   games,
   aiVersion: aiVersionForMode(mode),
   profile,
+  engine,
   seedPrefix,
   maxPieces,
   workers,
+  batchSize,
+  warmupGames,
   cpuCores,
   ...summary,
-  scoreCsv: results.map((result) => result.score).join(","),
 };
+if (!omitScoreCsv) report.scoreCsv = results.map((result) => result.score).join(",");
 
 if (output) writeFileSync(output, resultsToCsv(results));
 if (jsonOutput) writeFileSync(jsonOutput, `${JSON.stringify(report, null, 2)}\n`);
 if (!quiet) process.stderr.write("\n");
 console.log(JSON.stringify(report, null, 2));
+
+function assignNextBatch(worker, resolve = null) {
+  if (nextGameIndex >= games) {
+    worker.postMessage({ type: "stop" });
+    if (resolve) resolve();
+    return;
+  }
+  const start = nextGameIndex;
+  const end = Math.min(games, start + batchSize);
+  nextGameIndex = end;
+  worker.postMessage({ type: "run", start, end });
+}
 
 function parseWorkers(value, cores) {
   if (value === "auto") return Math.max(1, cores - 1);

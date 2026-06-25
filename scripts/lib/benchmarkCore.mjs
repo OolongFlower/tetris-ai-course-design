@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { AI_VERSION, LEGACY_AI_VERSION, TetrisAI } from "../../src/ai.js";
+import { playFastTetrisGame } from "../../src/fastTetris.js";
 import { TetrisGame } from "../../src/tetrisCore.js";
 
 export const DEFAULT_MAX_PIECES = 100000;
@@ -100,8 +101,38 @@ export function playGameWithAi(ai, options) {
     capped: steps >= maxPieces && game.status === "running",
     noMove,
     elapsedMs: performance.now() - startedAt,
+    candidatePlacements: profileStats?.candidatePlacements ?? 0,
     actions,
   };
+}
+
+export function playBenchmarkGame(options) {
+  const {
+    engine = "fast",
+    gameIndex = 0,
+    seed = seedForGame(DEFAULT_SEED_PREFIX, gameIndex),
+    mode = "dt10",
+    maxPieces = DEFAULT_MAX_PIECES,
+    recordActions = false,
+  } = options;
+  const startedAt = performance.now();
+  if (engine === "fast" && mode === "dt10") {
+    const result = playFastTetrisGame({ gameIndex, seed, maxPieces, recordActions });
+    result.elapsedMs = performance.now() - startedAt;
+    return result;
+  }
+  const profileStats = createProfileStats();
+  const ai = options.ai ?? createAi(mode);
+  const result = playGameWithAi(ai, {
+    gameIndex,
+    seed,
+    mode,
+    maxPieces,
+    profileStats,
+    recordActions,
+  });
+  result.candidatePlacements = profileStats.candidatePlacements;
+  return result;
 }
 
 export function createAi(mode = "dt10") {
@@ -111,12 +142,14 @@ export function createAi(mode = "dt10") {
 export function summarizeResults(results, elapsedSeconds) {
   const stats = createWelfordStats();
   let totalPieces = 0;
+  let totalCandidatePlacements = 0;
   let capped = 0;
   let min = Infinity;
   let max = -Infinity;
   for (const result of results) {
     addWelford(stats, result.score);
     totalPieces += result.pieces;
+    totalCandidatePlacements += result.candidatePlacements ?? 0;
     if (result.capped) capped += 1;
     if (result.score < min) min = result.score;
     if (result.score > max) max = result.score;
@@ -130,16 +163,18 @@ export function summarizeResults(results, elapsedSeconds) {
     max: results.length ? max : 0,
     averagePieces: results.length ? totalPieces / results.length : 0,
     totalPieces,
+    totalCandidatePlacements,
     capped,
     truncated: capped > 0,
     elapsedSeconds,
     gamesPerSecond: elapsedSeconds > 0 ? results.length / elapsedSeconds : 0,
     piecesPerSecond: elapsedSeconds > 0 ? totalPieces / elapsedSeconds : 0,
+    candidatesPerSecond: elapsedSeconds > 0 ? totalCandidatePlacements / elapsedSeconds : 0,
   };
 }
 
 export function resultsToCsv(results) {
-  const lines = ["gameIndex,seed,score,lines,pieces,capped,elapsedMs"];
+  const lines = ["gameIndex,seed,score,lines,pieces,candidatePlacements,capped,elapsedMs"];
   for (const result of results) {
     lines.push(
       [
@@ -148,6 +183,7 @@ export function resultsToCsv(results) {
         result.score,
         result.lines,
         result.pieces,
+        result.candidatePlacements ?? 0,
         result.capped ? 1 : 0,
         result.elapsedMs.toFixed(3),
       ].join(","),

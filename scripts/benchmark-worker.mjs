@@ -1,50 +1,51 @@
 import { parentPort, workerData } from "node:worker_threads";
 import {
-  createAi,
   DEFAULT_MAX_PIECES,
   DEFAULT_SEED_PREFIX,
   normalizeProfile,
-  playGameWithAi,
+  playBenchmarkGame,
   seedForGame,
-  summarizeResults,
 } from "./lib/benchmarkCore.mjs";
 
 const {
   workerId,
-  workerCount,
-  games,
   profile = "dt10-2013",
+  engine = "fast",
   maxPieces = DEFAULT_MAX_PIECES,
   seedPrefix = DEFAULT_SEED_PREFIX,
-  progressEvery = 50,
+  warmupGames = 2,
 } = workerData;
 
 const mode = normalizeProfile(profile);
-const ai = createAi(mode);
-const results = [];
-let completed = 0;
 
-for (let gameIndex = workerId; gameIndex < games; gameIndex += workerCount) {
-  results.push(
-    playGameWithAi(ai, {
-      gameIndex,
-      seed: seedForGame(seedPrefix, gameIndex),
-      mode,
-      maxPieces,
-    }),
-  );
-  completed += 1;
-  if (progressEvery > 0 && completed % progressEvery === 0) {
-    parentPort.postMessage({ type: "progress", completed });
-  }
+for (let i = 0; i < warmupGames; i += 1) {
+  playBenchmarkGame({
+    engine,
+    gameIndex: -1,
+    seed: `warmup-${workerId}-${i}`,
+    mode,
+    maxPieces,
+  });
 }
 
-const localElapsedSeconds =
-  results.reduce((sum, result) => sum + result.elapsedMs, 0) / 1000;
-parentPort.postMessage({
-  type: "done",
-  workerId,
-  completed,
-  summary: summarizeResults(results, localElapsedSeconds),
-  results,
+parentPort.on("message", (message) => {
+  if (message.type === "run") {
+    const results = [];
+    for (let gameIndex = message.start; gameIndex < message.end; gameIndex += 1) {
+      results.push(
+        playBenchmarkGame({
+          engine,
+          gameIndex,
+          seed: seedForGame(seedPrefix, gameIndex),
+          mode,
+          maxPieces,
+        }),
+      );
+    }
+    parentPort.postMessage({ type: "batchDone", workerId, results });
+  } else if (message.type === "stop") {
+    process.exit(0);
+  }
 });
+
+parentPort.postMessage({ type: "ready", workerId });

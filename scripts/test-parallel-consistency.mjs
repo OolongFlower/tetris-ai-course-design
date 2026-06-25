@@ -2,25 +2,31 @@ import { spawnSync } from "node:child_process";
 
 const games = Number(process.argv[2] ?? 4);
 const workerModes = ["1", "2", "4", "auto"];
-const reports = workerModes.map((workers) => runBenchmark(workers));
+const batchSizes = ["1", "2", "5", "10", "20"];
+const reports = [];
+for (const workers of workerModes) {
+  for (const batchSize of batchSizes) {
+    reports.push(runBenchmark(workers, batchSize));
+  }
+}
 const expected = reports[0].scoreCsv;
 
 for (const report of reports) {
   if (report.scoreCsv !== expected) {
     throw new Error(
-      `Parallel score mismatch for workers=${report.workers}\nexpected=${expected}\nactual=${report.scoreCsv}`,
+      `Parallel score mismatch for workers=${report.workers}, batchSize=${report.batchSize}\nexpected=${expected}\nactual=${report.scoreCsv}`,
     );
   }
   if (report.capped !== 0) {
-    throw new Error(`Parallel consistency run capped with workers=${report.workers}`);
+    throw new Error(`Parallel consistency run capped with workers=${report.workers}, batchSize=${report.batchSize}`);
   }
 }
 
 console.log(
-  `Parallel consistency passed for ${games} games: workers=${workerModes.join(", ")}.`,
+  `Parallel consistency passed for ${games} games: workers=${workerModes.join(", ")}, batchSize=${batchSizes.join(", ")}.`,
 );
 
-function runBenchmark(workers) {
+function runBenchmark(workers, batchSize) {
   const result = spawnSync(
     process.execPath,
     [
@@ -29,8 +35,12 @@ function runBenchmark(workers) {
       String(games),
       "--workers",
       workers,
+      "--batchSize",
+      batchSize,
       "--profile",
       "dt10-2013",
+      "--engine",
+      "fast",
       "--quiet",
     ],
     { encoding: "utf8" },
