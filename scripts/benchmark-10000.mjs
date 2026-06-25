@@ -3,6 +3,9 @@ import { TetrisGame } from "../src/tetrisCore.js";
 
 const games = Number(process.argv[2] ?? 10000);
 const maxPieces = Number(process.argv[3] ?? 20000);
+// Search depth: 1 = greedy (fast, scales to 10000 games); 2+ looks ahead using
+// the known next pieces and plays near-perfectly, but costs much more time.
+const depth = Number(process.argv[4] ?? 1);
 const ai = new TetrisAI();
 const scores = [];
 const pieces = [];
@@ -15,7 +18,7 @@ for (let i = 0; i < games; i += 1) {
   game.start();
   let steps = 0;
   while (game.status === "running" && steps < maxPieces) {
-    const move = ai.findBestMove(game.getState(), { depth: 1 });
+    const move = ai.findBestMove(game.getState(), { depth });
     if (!move) break;
     game.applyMoveTarget(move);
     steps += 1;
@@ -37,6 +40,7 @@ console.log(
   JSON.stringify(
     {
       games,
+      depth,
       rule: "10x10, uniform 7-piece random, 1 point per cleared line",
       mean,
       variance: varScore,

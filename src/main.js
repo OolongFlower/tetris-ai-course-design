@@ -1,5 +1,5 @@
 import { TetrisGame } from "./tetrisCore.js";
-import { AI_VERSION, TetrisAI } from "./ai.js?v=10x10-tuned-v2";
+import { AI_VERSION, TetrisAI } from "./ai.js?v=10x10-lookahead-v3";
 import { drawBoard, drawNextQueue, setupCanvas } from "./renderer.js";
 import { AiSocketClient } from "./wsClient.js";
 

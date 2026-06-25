@@ -53,19 +53,26 @@ SHAPES = {
 }
 
 WEIGHTS = {
-    "landingHeight": -2,
-    "erodedPieceCells": 8,
-    "completeLines": 3,
-    "rowTransitions": -1.2,
-    "columnTransitions": -2.5,
-    "holes": -10,
-    "wells": -1,
-    "maxHeight": -4,
+    "landingHeight": -2.8,
+    "erodedPieceCells": 2.2,
+    "completeLines": 1.65,
+    "rowTransitions": -2.4,
+    "columnTransitions": -2.1,
+    "holes": -14,
+    "wells": -1.6,
+    "maxHeight": -2.88,
     "aggregateHeight": -0.2,
-    "bumpiness": -0.4,
+    "bumpiness": -0.34,
 }
 
-AI_VERSION = "10x10-tuned-v2"
+# Reward features describe the piece just placed and accumulate along a
+# look-ahead path; the rest are positional and only matter for the final board.
+PER_MOVE_FEATURES = ("landingHeight", "erodedPieceCells", "completeLines")
+
+# Locking a piece above the visible board is an imminent top-out; avoid it.
+TOP_OUT_PENALTY = 1e6
+
+AI_VERSION = "10x10-lookahead-v3"
 
 
 def unique_rotations(piece_type):
@@ -224,14 +231,22 @@ def score_features(features):
     return sum(features.get(key, 0) * weight for key, weight in WEIGHTS.items())
 
 
-def merge_features(left, right):
-    result = dict(left)
-    for key, value in right.items():
-        result[key] = result.get(key, 0) + value
-    return result
+def score_per_move(features):
+    return sum(features.get(key, 0) * WEIGHTS[key] for key in PER_MOVE_FEATURES)
 
 
-def search(board, piece_type, next_pieces, depth, discount=0.72):
+def score_positional(features):
+    return sum(
+        features.get(key, 0) * weight
+        for key, weight in WEIGHTS.items()
+        if key not in PER_MOVE_FEATURES
+    )
+
+
+def search(board, queue, index):
+    """queue[index] is placed at this level; deeper levels place later pieces."""
+    piece_type = queue[index]
+    is_leaf = index == len(queue) - 1
     best = None
     for placement in enumerate_placements(board, piece_type):
         applied = apply_placement(board, piece_type, placement["rotation"], placement["x"])
@@ -246,15 +261,19 @@ def search(board, piece_type, next_pieces, depth, discount=0.72):
             applied["lines"],
             {"cells": cells, "clearedRows": applied["clearedRows"]},
         )
-        score = score_features(features)
-        combined = features
-        if depth > 1 and next_pieces:
-            child = search(applied["board"], next_pieces[0], next_pieces[1:], depth - 1, discount)
+        value = score_per_move(features)
+        if applied["topOut"]:
+            value -= TOP_OUT_PENALTY
+        if is_leaf:
+            value += score_positional(features)
+        else:
+            child = search(applied["board"], queue, index + 1)
             if child:
-                score += child["score"] * discount
-                combined = merge_features(features, child["features"])
-        if best is None or score > best["score"]:
-            best = {"placement": placement, "score": score, "features": combined}
+                value += child["score"]
+            else:
+                value -= TOP_OUT_PENALTY
+        if best is None or value > best["score"]:
+            best = {"placement": placement, "score": value, "features": features}
     return best
 
 
@@ -278,7 +297,9 @@ def choose_move(message):
     board = message["board"]
     piece_type = current["type"]
     depth = max(1, min(3, int(message.get("depth", 2))))
-    best = search(board, piece_type, message.get("next", []), depth)
+    # The look-ahead can only use as many future pieces as we actually know.
+    queue = [piece_type, *message.get("next", [])][:depth]
+    best = search(board, queue, 0)
     if not best:
         return {"type": "move", "seq": message.get("seq"), "error": "no legal move"}
     placement = best["placement"]

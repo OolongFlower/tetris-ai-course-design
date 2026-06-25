@@ -1,20 +1,27 @@
 import { applyPlacement, cloneBoard, collides, getDropY } from "./tetrisCore.js";
 import { SHAPES, uniqueRotations } from "./tetrominoes.js";
 
-export const AI_VERSION = "10x10-tuned-v2";
+export const AI_VERSION = "10x10-lookahead-v3";
 
 export const DEFAULT_WEIGHTS = {
-  landingHeight: -2,
-  erodedPieceCells: 8,
-  completeLines: 3,
-  rowTransitions: -1.2,
-  columnTransitions: -2.5,
-  holes: -10,
-  wells: -1,
-  maxHeight: -4,
+  landingHeight: -2.8,
+  erodedPieceCells: 2.2,
+  completeLines: 1.65,
+  rowTransitions: -2.4,
+  columnTransitions: -2.1,
+  holes: -14,
+  wells: -1.6,
+  maxHeight: -2.88,
   aggregateHeight: -0.2,
-  bumpiness: -0.4,
+  bumpiness: -0.34,
 };
+
+// Per-move reward features describe the piece that was just placed, so when we
+// look ahead they accumulate along the search path. The remaining (positional)
+// features describe a resting board, so they are only meaningful for the final
+// board reached at the end of the look-ahead. With a single ply both sets are
+// scored on the same board, which is exactly the original greedy evaluation.
+const PER_MOVE_FEATURES = ["landingHeight", "erodedPieceCells", "completeLines"];
 
 export function enumeratePlacements(board, type) {
   if (!type) return [];
@@ -53,8 +60,12 @@ export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
   const height = board.length;
   const width = board[0].length;
   const heights = columnHeights(board);
-  const aggregateHeight = heights.reduce((sum, value) => sum + value, 0);
-  const maxHeight = Math.max(...heights);
+  let aggregateHeight = 0;
+  let maxHeight = 0;
+  for (let x = 0; x < width; x += 1) {
+    aggregateHeight += heights[x];
+    if (heights[x] > maxHeight) maxHeight = heights[x];
+  }
   let holes = 0;
   let columnTransitions = 0;
   let rowTransitions = 0;
@@ -95,14 +106,24 @@ export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
     bumpiness += Math.abs(heights[x] - heights[x + 1]);
   }
 
-  const visibleCells = placementInfo?.cells?.filter(([, y]) => y >= 0) ?? [];
-  const landingHeight =
-    visibleCells.length > 0
-      ? height - visibleCells.reduce((sum, [, y]) => sum + y, 0) / visibleCells.length
-      : 0;
-  const clearedRows = new Set(placementInfo?.clearedRows ?? []);
-  const erodedPieceCells =
-    linesCleared * visibleCells.filter(([, y]) => clearedRows.has(y)).length;
+  let landingHeight = 0;
+  let erodedPieceCells = 0;
+  const cells = placementInfo?.cells;
+  if (cells) {
+    const clearedRows = placementInfo?.clearedRows;
+    let visible = 0;
+    let ySum = 0;
+    let erodedCount = 0;
+    for (let i = 0; i < cells.length; i += 1) {
+      const cy = cells[i][1];
+      if (cy < 0) continue;
+      visible += 1;
+      ySum += cy;
+      if (linesCleared > 0 && clearedRows && clearedRows.includes(cy)) erodedCount += 1;
+    }
+    if (visible > 0) landingHeight = height - ySum / visible;
+    erodedPieceCells = linesCleared * erodedCount;
+  }
 
   return {
     aggregateHeight,
@@ -124,18 +145,37 @@ export function scoreFeatures(features, weights = DEFAULT_WEIGHTS) {
   }, 0);
 }
 
-function mergeFeatures(base, extra) {
-  const result = { ...base };
-  for (const [key, value] of Object.entries(extra)) {
-    result[key] = (result[key] ?? 0) + value;
-  }
-  return result;
-}
+// A placement that locks part of the piece above the visible board is an
+// imminent top-out: penalise it so heavily that the search avoids it whenever a
+// survivable alternative exists.
+const TOP_OUT_PENALTY = 1e6;
 
 export class TetrisAI {
   constructor(options = {}) {
     this.weights = { ...DEFAULT_WEIGHTS, ...(options.weights ?? {}) };
-    this.discount = options.discount ?? 0.72;
+    // Pre-split the weights so the hot search loop never touches Object.entries.
+    this.perMoveWeights = PER_MOVE_FEATURES.map((key) => [key, this.weights[key] ?? 0]);
+    this.positionalWeights = Object.entries(this.weights).filter(
+      ([key]) => !PER_MOVE_FEATURES.includes(key),
+    );
+  }
+
+  scorePerMove(features) {
+    let sum = 0;
+    for (let i = 0; i < this.perMoveWeights.length; i += 1) {
+      const entry = this.perMoveWeights[i];
+      sum += (features[entry[0]] ?? 0) * entry[1];
+    }
+    return sum;
+  }
+
+  scorePositional(features) {
+    let sum = 0;
+    for (let i = 0; i < this.positionalWeights.length; i += 1) {
+      const entry = this.positionalWeights[i];
+      sum += (features[entry[0]] ?? 0) * entry[1];
+    }
+    return sum;
   }
 
   findBestMove(state, options = {}) {
@@ -145,7 +185,9 @@ export class TetrisAI {
     if (!type) return null;
     const next = options.next ?? state.next ?? [];
     const depth = Math.max(1, Number(options.depth ?? 1));
-    const result = this.search(board, type, next, depth);
+    // The look-ahead can only use as many future pieces as we actually know.
+    const queue = [type, ...next].slice(0, depth);
+    const result = this.search(board, queue, 0);
     if (!result) return null;
     return {
       type: "move",
@@ -160,7 +202,12 @@ export class TetrisAI {
     };
   }
 
-  search(board, type, nextPieces = [], depth = 1) {
+  // queue[index] is the piece to place at this level; deeper levels place the
+  // following pieces. Returns the best achievable value for the sub-tree rooted
+  // at `index`, together with the placement chosen for queue[index].
+  search(board, queue, index) {
+    const type = queue[index];
+    const isLeaf = index === queue.length - 1;
     const placements = enumeratePlacements(board, type);
     let best = null;
     for (const placement of placements) {
@@ -170,21 +217,19 @@ export class TetrisAI {
         cells: placement.cells,
         clearedRows: applied.clearedRows,
       });
-      let score = scoreFeatures(features, this.weights);
-      let combinedFeatures = features;
-      if (depth > 1 && nextPieces.length > 0) {
-        const child = this.search(applied.board, nextPieces[0], nextPieces.slice(1), depth - 1);
-        if (child) {
-          score += child.score * this.discount;
-          combinedFeatures = mergeFeatures(features, child.features);
-        }
+      // Reward features of the piece we just placed accumulate down the path.
+      let value = this.scorePerMove(features);
+      if (applied.topOut) value -= TOP_OUT_PENALTY;
+      if (isLeaf) {
+        // Positional quality only matters for the board we actually stop on.
+        value += this.scorePositional(features);
+      } else {
+        const child = this.search(applied.board, queue, index + 1);
+        if (child) value += child.score;
+        else value -= TOP_OUT_PENALTY;
       }
-      if (!best || score > best.score) {
-        best = {
-          placement,
-          score,
-          features: combinedFeatures,
-        };
+      if (!best || value > best.score) {
+        best = { placement, score: value, features };
       }
     }
     return best;
