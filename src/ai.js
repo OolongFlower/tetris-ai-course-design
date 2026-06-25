@@ -1,20 +1,38 @@
-import { applyPlacement, cloneBoard, collides, getDropY } from "./tetrisCore.js";
+import { cloneBoard, collides, getDropY, placePieceOnBoard } from "./tetrisCore.js";
 import { SHAPES, uniqueRotations } from "./tetrominoes.js";
 
-export const AI_VERSION = "10x10-tuned-v2";
+export const AI_VERSION = "dt10-2013";
+export const LEGACY_AI_VERSION = "legacy-v2";
 
-export const DEFAULT_WEIGHTS = {
-  landingHeight: -2,
-  erodedPieceCells: 8,
-  completeLines: 3,
-  rowTransitions: -1.2,
-  columnTransitions: -2.5,
-  holes: -10,
-  wells: -1,
-  maxHeight: -4,
-  aggregateHeight: -0.2,
-  bumpiness: -0.4,
+export const DT10_WEIGHTS = {
+  landingHeight: -2.18,
+  erodedPieceCells: 2.42,
+  rowTransitions: -2.17,
+  columnTransitions: -3.31,
+  holes: 0.95,
+  boardWells: -2.22,
+  holeDepth: -0.81,
+  rowsWithHoles: -9.65,
+  diversity: 1.27,
 };
+
+export const LEGACY_V2_WEIGHTS = {
+  landingHeight: -6.829161581507131,
+  erodedPieceCells: 1.2625699276081392,
+  completeLines: 2.2516357547538375,
+  rowTransitions: -2.234822618376413,
+  columnTransitions: -1.2755671156491482,
+  holes: -9.753739400223699,
+  wells: -3.0875915164929117,
+  holeDepth: -0.877042170838884,
+  rowsWithHoles: -17.571195833107563,
+  diversity: 1.5115395911374212,
+  maxHeight: -3.0540182667701594,
+  aggregateHeight: -0.6847023989376868,
+  bumpiness: -0.7577483881773939,
+};
+
+export const DEFAULT_WEIGHTS = DT10_WEIGHTS;
 
 export function enumeratePlacements(board, type) {
   if (!type) return [];
@@ -49,7 +67,106 @@ function columnHeights(board) {
   return heights;
 }
 
-export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
+function isFilled(board, x, y) {
+  if (x < 0 || x >= board[0].length) return true;
+  if (y >= board.length) return true;
+  if (y < 0) return false;
+  return Boolean(board[y][x]);
+}
+
+export function getDt10Features(board, placementInfo) {
+  const height = board.length;
+  const width = board[0].length;
+  const type = placementInfo?.type;
+  const rotation = placementInfo?.rotation ?? 0;
+  const placementY = placementInfo?.y ?? 0;
+  const shape = type ? SHAPES[type][rotation % 4] : [];
+  const minDy = shape.length ? Math.min(...shape.map(([, dy]) => dy)) : 0;
+  const maxDy = shape.length ? Math.max(...shape.map(([, dy]) => dy)) : 0;
+  const lowestBoardY = placementY + maxDy;
+  const bottomHeight = height - 1 - lowestBoardY;
+  const landingHeight = bottomHeight + (maxDy - minDy) / 2;
+
+  const linesCleared = placementInfo?.linesCleared ?? 0;
+  const clearedRows = new Set(placementInfo?.clearedRows ?? []);
+  const pieceCells = placementInfo?.cells ?? [];
+  const erodedPieceCells =
+    linesCleared * pieceCells.filter(([, y]) => clearedRows.has(y)).length;
+
+  let rowTransitions = 0;
+  for (let y = 0; y < height; y += 1) {
+    let previousFilled = true;
+    for (let x = 0; x < width; x += 1) {
+      const filled = Boolean(board[y][x]);
+      if (filled !== previousFilled) rowTransitions += 1;
+      previousFilled = filled;
+    }
+    if (!previousFilled) rowTransitions += 1;
+  }
+
+  let columnTransitions = 0;
+  for (let x = 0; x < width; x += 1) {
+    let previousFilled = false;
+    for (let y = 0; y < height; y += 1) {
+      const filled = Boolean(board[y][x]);
+      if (filled !== previousFilled) columnTransitions += 1;
+      previousFilled = filled;
+    }
+    if (!previousFilled) columnTransitions += 1;
+  }
+
+  const holeCells = [];
+  const rowsWithHoles = new Set();
+  let holeDepth = 0;
+  for (let x = 0; x < width; x += 1) {
+    let filledAbove = 0;
+    for (let y = 0; y < height; y += 1) {
+      if (board[y][x]) {
+        filledAbove += 1;
+      } else if (filledAbove > 0) {
+        holeCells.push([x, y]);
+        rowsWithHoles.add(y);
+        holeDepth += filledAbove;
+      }
+    }
+  }
+
+  let boardWells = 0;
+  for (let x = 0; x < width; x += 1) {
+    let wellDepth = 0;
+    for (let y = 0; y < height; y += 1) {
+      const isWellCell =
+        !board[y][x] && isFilled(board, x - 1, y) && isFilled(board, x + 1, y);
+      if (isWellCell) {
+        wellDepth += 1;
+        boardWells += wellDepth;
+      } else {
+        wellDepth = 0;
+      }
+    }
+  }
+
+  const heights = columnHeights(board);
+  const heightDiffs = new Set();
+  for (let x = 0; x < width - 1; x += 1) {
+    const diff = heights[x] - heights[x + 1];
+    if (diff >= -2 && diff <= 2) heightDiffs.add(diff);
+  }
+
+  return {
+    landingHeight,
+    erodedPieceCells,
+    rowTransitions,
+    columnTransitions,
+    holes: holeCells.length,
+    boardWells,
+    holeDepth,
+    rowsWithHoles: rowsWithHoles.size,
+    diversity: heightDiffs.size,
+  };
+}
+
+export function getLegacyFeatures(board, placementInfo = {}) {
   const height = board.length;
   const width = board[0].length;
   const heights = columnHeights(board);
@@ -59,6 +176,8 @@ export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
   let columnTransitions = 0;
   let rowTransitions = 0;
   let wells = 0;
+  let holeDepth = 0;
+  const rowsWithHoles = new Set();
 
   for (let x = 0; x < width; x += 1) {
     let blockSeen = false;
@@ -66,7 +185,16 @@ export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
     for (let y = 0; y < height; y += 1) {
       const filled = Boolean(board[y][x]);
       if (filled) blockSeen = true;
-      else if (blockSeen) holes += 1;
+      else if (blockSeen) {
+        holes += 1;
+        rowsWithHoles.add(y);
+        for (let above = y - 1; above >= 0; above -= 1) {
+          if (board[above][x]) {
+            holeDepth += y - above;
+            break;
+          }
+        }
+      }
       if (filled !== previousFilled) columnTransitions += 1;
       previousFilled = filled;
     }
@@ -95,12 +223,18 @@ export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
     bumpiness += Math.abs(heights[x] - heights[x + 1]);
   }
 
-  const visibleCells = placementInfo?.cells?.filter(([, y]) => y >= 0) ?? [];
+  const heightDiffs = new Set();
+  for (let x = 0; x < width - 1; x += 1) {
+    heightDiffs.add(heights[x] - heights[x + 1]);
+  }
+
+  const visibleCells = placementInfo.cells?.filter(([, y]) => y >= 0) ?? [];
   const landingHeight =
     visibleCells.length > 0
       ? height - visibleCells.reduce((sum, [, y]) => sum + y, 0) / visibleCells.length
       : 0;
-  const clearedRows = new Set(placementInfo?.clearedRows ?? []);
+  const clearedRows = new Set(placementInfo.clearedRows ?? []);
+  const linesCleared = placementInfo.linesCleared ?? 0;
   const erodedPieceCells =
     linesCleared * visibleCells.filter(([, y]) => clearedRows.has(y)).length;
 
@@ -112,30 +246,35 @@ export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
     holes,
     bumpiness,
     wells,
+    holeDepth,
+    rowsWithHoles: rowsWithHoles.size,
+    diversity: heightDiffs.size,
     rowTransitions,
     columnTransitions,
     maxHeight,
   };
 }
 
-export function scoreFeatures(features, weights = DEFAULT_WEIGHTS) {
+export function evaluateBoard(board, linesCleared = 0, placementInfo = null) {
+  return getDt10Features(board, {
+    ...placementInfo,
+    linesCleared,
+  });
+}
+
+export function scoreFeatures(features, weights = DT10_WEIGHTS) {
   return Object.entries(weights).reduce((sum, [key, weight]) => {
     return sum + (features[key] ?? 0) * weight;
   }, 0);
 }
 
-function mergeFeatures(base, extra) {
-  const result = { ...base };
-  for (const [key, value] of Object.entries(extra)) {
-    result[key] = (result[key] ?? 0) + value;
-  }
-  return result;
-}
-
 export class TetrisAI {
   constructor(options = {}) {
-    this.weights = { ...DEFAULT_WEIGHTS, ...(options.weights ?? {}) };
-    this.discount = options.discount ?? 0.72;
+    this.mode = options.mode ?? "dt10";
+    this.weights = {
+      ...(this.mode === "legacy-v2" ? LEGACY_V2_WEIGHTS : DT10_WEIGHTS),
+      ...(options.weights ?? {}),
+    };
   }
 
   findBestMove(state, options = {}) {
@@ -143,9 +282,11 @@ export class TetrisAI {
     const current = typeof state.current === "string" ? { type: state.current } : state.current;
     const type = current?.type;
     if (!type) return null;
-    const next = options.next ?? state.next ?? [];
-    const depth = Math.max(1, Number(options.depth ?? 1));
-    const result = this.search(board, type, next, depth);
+    const mode = options.mode ?? this.mode;
+    const result =
+      mode === "legacy-v2"
+        ? this.searchLegacy(board, type)
+        : this.searchDt10(board, type);
     if (!result) return null;
     return {
       type: "move",
@@ -156,39 +297,60 @@ export class TetrisAI {
       eval: result.score,
       features: result.features,
       actions: buildActionList(current, result.placement),
-      source: depth > 1 ? `heuristic-depth-${depth}` : "heuristic-depth-1",
+      source: mode === "legacy-v2" ? LEGACY_AI_VERSION : AI_VERSION,
+      aiVersion: mode === "legacy-v2" ? LEGACY_AI_VERSION : AI_VERSION,
     };
   }
 
-  search(board, type, nextPieces = [], depth = 1) {
-    const placements = enumeratePlacements(board, type);
+  searchDt10(board, type) {
     let best = null;
-    for (const placement of placements) {
-      const applied = applyPlacement(board, type, placement.rotation, placement.x);
-      if (!applied) continue;
-      const features = evaluateBoard(applied.board, applied.lines, {
+    for (const placement of enumeratePlacements(board, type)) {
+      const applied = placePieceOnBoard(board, type, placement.rotation, placement.x, placement.y);
+      if (!applied || applied.topOut) continue;
+      const features = getDt10Features(applied.board, {
+        type,
+        rotation: placement.rotation,
+        x: placement.x,
+        y: placement.y,
         cells: placement.cells,
         clearedRows: applied.clearedRows,
+        linesCleared: applied.lines,
       });
-      let score = scoreFeatures(features, this.weights);
-      let combinedFeatures = features;
-      if (depth > 1 && nextPieces.length > 0) {
-        const child = this.search(applied.board, nextPieces[0], nextPieces.slice(1), depth - 1);
-        if (child) {
-          score += child.score * this.discount;
-          combinedFeatures = mergeFeatures(features, child.features);
-        }
-      }
-      if (!best || score > best.score) {
-        best = {
-          placement,
-          score,
-          features: combinedFeatures,
-        };
+      const score = scoreFeatures(features, DT10_WEIGHTS);
+      if (isBetterCandidate(best, placement, score)) {
+        best = { placement, score, features };
       }
     }
     return best;
   }
+
+  searchLegacy(board, type) {
+    let best = null;
+    for (const placement of enumeratePlacements(board, type)) {
+      const applied = placePieceOnBoard(board, type, placement.rotation, placement.x, placement.y);
+      if (!applied) continue;
+      const features = getLegacyFeatures(applied.board, {
+        cells: placement.cells,
+        clearedRows: applied.clearedRows,
+        linesCleared: applied.lines,
+      });
+      const score = scoreFeatures(features, LEGACY_V2_WEIGHTS);
+      if (isBetterCandidate(best, placement, score)) {
+        best = { placement, score, features };
+      }
+    }
+    return best;
+  }
+}
+
+function isBetterCandidate(best, placement, score) {
+  if (!best) return true;
+  if (score > best.score) return true;
+  if (score < best.score) return false;
+  if (placement.rotation !== best.placement.rotation) {
+    return placement.rotation < best.placement.rotation;
+  }
+  return placement.x < best.placement.x;
 }
 
 export function buildActionList(current, placement) {

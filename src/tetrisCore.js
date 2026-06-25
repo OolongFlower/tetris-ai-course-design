@@ -260,24 +260,17 @@ export class TetrisGame {
 
   applyMoveTarget(move) {
     if (!move || this.status !== "running" || !this.current) return false;
-    const targetRotation = Number(move.rotation ?? this.current.rotation) % 4;
-    let guard = 0;
-    while (this.current.rotation !== targetRotation && guard < 4) {
-      this.rotate(1);
-      guard += 1;
-    }
+    const targetRotation = ((Number(move.rotation ?? this.current.rotation) % 4) + 4) % 4;
     const targetX = Number(move.x ?? this.current.x);
-    guard = 0;
-    while (this.current.x < targetX && guard < 12) {
-      if (!this.move(1, 0)) break;
-      guard += 1;
-    }
-    guard = 0;
-    while (this.current.x > targetX && guard < 12) {
-      if (!this.move(-1, 0)) break;
-      guard += 1;
-    }
-    this.hardDrop();
+    const targetY = getDropY(this.board, this.current.type, targetRotation, targetX);
+    if (targetY == null) return false;
+    this.current = {
+      ...this.current,
+      rotation: targetRotation,
+      x: targetX,
+      y: targetY,
+    };
+    this.lockPiece();
     return true;
   }
 

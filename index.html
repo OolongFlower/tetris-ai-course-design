@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <h1>Tetris AI</h1>
-          <p>10×10 Tetris · WebSocket JSON AI 接口 · 10000 局统计实验</p>
+          <p>10x10 Tetris · WebSocket JSON AI 接口 · 10000 局统计实验</p>
         </div>
         <div class="status-strip" aria-live="polite">
           <span id="gameStatus">未开始</span>
@@ -35,10 +35,9 @@
           </label>
 
           <label class="field">
-            <span>AI 搜索深度</span>
+            <span>AI 搜索策略</span>
             <select id="depthSelect">
-              <option value="1" selected>1 层：推荐评测</option>
-              <option value="2">2 层：向前看一块</option>
+              <option value="1" selected>DT-10：单层 afterstate 贪心</option>
             </select>
           </label>
 
@@ -123,6 +122,6 @@
       </div>
     </main>
 
-    <script type="module" src="./src/main.js?v=10x10-tuned-v2"></script>
+    <script type="module" src="./src/main.js?v=dt10-2013"></script>
   </body>
 </html>

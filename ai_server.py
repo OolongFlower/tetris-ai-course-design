@@ -53,26 +53,27 @@ SHAPES = {
 }
 
 WEIGHTS = {
-    "landingHeight": -2,
-    "erodedPieceCells": 8,
-    "completeLines": 3,
-    "rowTransitions": -1.2,
-    "columnTransitions": -2.5,
-    "holes": -10,
-    "wells": -1,
-    "maxHeight": -4,
-    "aggregateHeight": -0.2,
-    "bumpiness": -0.4,
+    "landingHeight": -2.18,
+    "erodedPieceCells": 2.42,
+    "rowTransitions": -2.17,
+    "columnTransitions": -3.31,
+    "holes": 0.95,
+    "boardWells": -2.22,
+    "holeDepth": -0.81,
+    "rowsWithHoles": -9.65,
+    "diversity": 1.27,
 }
 
-AI_VERSION = "10x10-tuned-v2"
+AI_VERSION = "dt10-2013"
 
 
 def unique_rotations(piece_type):
     seen = set()
     result = []
     for rotation, cells in enumerate(SHAPES[piece_type]):
-        key = tuple(sorted(cells))
+        min_x = min(x for x, _ in cells)
+        min_y = min(y for _, y in cells)
+        key = tuple(sorted((x - min_x, y - min_y) for x, y in cells))
         if key not in seen:
             seen.add(key)
             result.append(rotation)
@@ -157,29 +158,36 @@ def column_heights(board):
     return heights
 
 
+def is_filled(board, x, y):
+    if x < 0 or x >= len(board[0]):
+        return True
+    if y >= len(board):
+        return True
+    if y < 0:
+        return False
+    return bool(board[y][x])
+
+
 def evaluate_board(board, lines_cleared, placement_info=None):
     height = len(board)
     width = len(board[0])
     heights = column_heights(board)
-    holes = 0
+    placement_info = placement_info or {}
+    piece_type = placement_info.get("type")
+    rotation = placement_info.get("rotation", 0)
+    placement_y = placement_info.get("y", 0)
+    shape = SHAPES[piece_type][rotation % 4] if piece_type else []
+    min_dy = min((dy for _, dy in shape), default=0)
+    max_dy = max((dy for _, dy in shape), default=0)
+    lowest_board_y = placement_y + max_dy
+    bottom_height = height - 1 - lowest_board_y
+    landing_height = bottom_height + (max_dy - min_dy) / 2
+
+    cleared_rows = set(placement_info.get("clearedRows", []))
+    piece_cells = placement_info.get("cells", [])
+    eroded_piece_cells = lines_cleared * sum(1 for _, y in piece_cells if y in cleared_rows)
+
     row_transitions = 0
-    column_transitions = 0
-
-    for x in range(width):
-        block_seen = False
-        previous_filled = True
-        for y in range(height):
-            filled = bool(board[y][x])
-            if filled:
-                block_seen = True
-            elif block_seen:
-                holes += 1
-            if filled != previous_filled:
-                column_transitions += 1
-            previous_filled = filled
-        if not previous_filled:
-            column_transitions += 1
-
     for y in range(height):
         previous_filled = True
         for x in range(width):
@@ -190,33 +198,61 @@ def evaluate_board(board, lines_cleared, placement_info=None):
         if not previous_filled:
             row_transitions += 1
 
-    wells = 0
+    column_transitions = 0
     for x in range(width):
-        left = height if x == 0 else heights[x - 1]
-        right = height if x == width - 1 else heights[x + 1]
-        depth = max(0, min(left, right) - heights[x])
-        wells += depth * (depth + 1) / 2
+        previous_filled = False
+        for y in range(height):
+            filled = bool(board[y][x])
+            if filled != previous_filled:
+                column_transitions += 1
+            previous_filled = filled
+        if not previous_filled:
+            column_transitions += 1
 
-    bumpiness = sum(abs(heights[x] - heights[x + 1]) for x in range(width - 1))
-    placement_info = placement_info or {}
-    visible_cells = [(x, y) for x, y in placement_info.get("cells", []) if y >= 0]
-    if visible_cells:
-        landing_height = height - sum(y for _, y in visible_cells) / len(visible_cells)
-    else:
-        landing_height = 0
-    cleared_rows = set(placement_info.get("clearedRows", []))
-    eroded_piece_cells = lines_cleared * sum(1 for _, y in visible_cells if y in cleared_rows)
+    holes = 0
+    hole_depth = 0
+    rows_with_holes = set()
+    for x in range(width):
+        filled_above = 0
+        for y in range(height):
+            if board[y][x]:
+                filled_above += 1
+            elif filled_above > 0:
+                holes += 1
+                rows_with_holes.add(y)
+                hole_depth += filled_above
+
+    board_wells = 0
+    for x in range(width):
+        well_depth = 0
+        for y in range(height):
+            well_cell = (
+                not board[y][x]
+                and is_filled(board, x - 1, y)
+                and is_filled(board, x + 1, y)
+            )
+            if well_cell:
+                well_depth += 1
+                board_wells += well_depth
+            else:
+                well_depth = 0
+
+    diversity_values = set()
+    for x in range(width - 1):
+        diff = heights[x] - heights[x + 1]
+        if -2 <= diff <= 2:
+            diversity_values.add(diff)
+
     return {
-        "aggregateHeight": sum(heights),
-        "completeLines": lines_cleared,
         "landingHeight": landing_height,
         "erodedPieceCells": eroded_piece_cells,
-        "holes": holes,
-        "bumpiness": bumpiness,
-        "wells": wells,
         "rowTransitions": row_transitions,
         "columnTransitions": column_transitions,
-        "maxHeight": max(heights),
+        "holes": holes,
+        "boardWells": board_wells,
+        "holeDepth": hole_depth,
+        "rowsWithHoles": len(rows_with_holes),
+        "diversity": len(diversity_values),
     }
 
 
@@ -224,18 +260,11 @@ def score_features(features):
     return sum(features.get(key, 0) * weight for key, weight in WEIGHTS.items())
 
 
-def merge_features(left, right):
-    result = dict(left)
-    for key, value in right.items():
-        result[key] = result.get(key, 0) + value
-    return result
-
-
-def search(board, piece_type, next_pieces, depth, discount=0.72):
+def search(board, piece_type):
     best = None
     for placement in enumerate_placements(board, piece_type):
         applied = apply_placement(board, piece_type, placement["rotation"], placement["x"])
-        if not applied:
+        if not applied or applied["topOut"]:
             continue
         cells = [
             (placement["x"] + dx, placement["y"] + dy)
@@ -244,17 +273,31 @@ def search(board, piece_type, next_pieces, depth, discount=0.72):
         features = evaluate_board(
             applied["board"],
             applied["lines"],
-            {"cells": cells, "clearedRows": applied["clearedRows"]},
+            {
+                "type": piece_type,
+                "rotation": placement["rotation"],
+                "x": placement["x"],
+                "y": placement["y"],
+                "cells": cells,
+                "clearedRows": applied["clearedRows"],
+            },
         )
         score = score_features(features)
-        combined = features
-        if depth > 1 and next_pieces:
-            child = search(applied["board"], next_pieces[0], next_pieces[1:], depth - 1, discount)
-            if child:
-                score += child["score"] * discount
-                combined = merge_features(features, child["features"])
-        if best is None or score > best["score"]:
-            best = {"placement": placement, "score": score, "features": combined}
+        if (
+            best is None
+            or score > best["score"]
+            or (
+                score == best["score"]
+                and (
+                    placement["rotation"] < best["placement"]["rotation"]
+                    or (
+                        placement["rotation"] == best["placement"]["rotation"]
+                        and placement["x"] < best["placement"]["x"]
+                    )
+                )
+            )
+        ):
+            best = {"placement": placement, "score": score, "features": features}
     return best
 
 
@@ -277,8 +320,7 @@ def choose_move(message):
         return {"type": "move", "seq": message.get("seq"), "error": "missing current piece"}
     board = message["board"]
     piece_type = current["type"]
-    depth = max(1, min(3, int(message.get("depth", 2))))
-    best = search(board, piece_type, message.get("next", []), depth)
+    best = search(board, piece_type)
     if not best:
         return {"type": "move", "seq": message.get("seq"), "error": "no legal move"}
     placement = best["placement"]
@@ -292,7 +334,7 @@ def choose_move(message):
         "score": best["score"],
         "features": best["features"],
         "actions": build_actions(current, placement),
-        "source": f"python-websocket-depth-{depth}",
+        "source": AI_VERSION,
         "aiVersion": AI_VERSION,
     }
 

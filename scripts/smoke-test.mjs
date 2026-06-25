@@ -9,7 +9,7 @@ for (let i = 0; i < 5; i += 1) {
   game.start();
   let steps = 0;
   while (game.status === "running" && steps < 600) {
-    const move = ai.findBestMove(game.getState(), { depth: 1 });
+    const move = ai.findBestMove(game.getState(), { mode: "dt10" });
     if (!move) throw new Error("AI returned no move");
     game.applyMoveTarget(move);
     steps += 1;

@@ -201,8 +201,10 @@ export function uniqueRotations(type) {
   const seen = new Set();
   const rotations = [];
   SHAPES[type].forEach((cells, rotation) => {
+    const minX = Math.min(...cells.map(([x]) => x));
+    const minY = Math.min(...cells.map(([, y]) => y));
     const key = cells
-      .map(([x, y]) => `${x},${y}`)
+      .map(([x, y]) => `${x - minX},${y - minY}`)
       .sort()
       .join("|");
     if (!seen.has(key)) {

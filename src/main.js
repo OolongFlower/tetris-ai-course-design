@@ -1,5 +1,5 @@
 import { TetrisGame } from "./tetrisCore.js";
-import { AI_VERSION, TetrisAI } from "./ai.js?v=10x10-tuned-v2";
+import { AI_VERSION, TetrisAI } from "./ai.js?v=dt10-2013";
 import { drawBoard, drawNextQueue, setupCanvas } from "./renderer.js";
 import { AiSocketClient } from "./wsClient.js";
 
@@ -37,7 +37,7 @@ const elements = {
 
 const boardCtx = setupCanvas(elements.boardCanvas, 420, 420);
 const nextCtx = setupCanvas(elements.nextCanvas, 240, 190);
-const ai = new TetrisAI();
+const ai = new TetrisAI({ mode: "dt10" });
 const wsClient = new AiSocketClient();
 
 let game = new TetrisGame({ seed: elements.seedInput.value });
@@ -100,6 +100,7 @@ elements.exportLogBtn.addEventListener("click", () => {
     score: game.score,
     lines: game.lines,
     pieces: game.pieces,
+    aiVersion: AI_VERSION,
     log: game.decisionLog,
   };
   downloadText(`tetris-ai-log-${Date.now()}.json`, JSON.stringify(payload, null, 2));
@@ -178,8 +179,8 @@ async function maybeRunAi() {
     aiPending = false;
     return;
   }
+
   const state = game.getState();
-  const depth = Number(elements.depthSelect.value);
   let move;
   try {
     if (!wsClient.isOpen()) {
@@ -187,14 +188,18 @@ async function maybeRunAi() {
       aiPending = false;
       return;
     }
-    move = await wsClient.requestMove({ ...state, depth }, 600);
-    elements.aiSource.textContent = "Python WebSocket AI";
-  } catch (error) {
+    move = await wsClient.requestMove({ ...state, depth: 1 }, 600);
+    elements.aiSource.textContent = move.aiVersion ?? "Python WebSocket AI";
+  } catch {
     elements.aiSource.textContent = "WebSocket 响应失败";
     aiPending = false;
     return;
   }
-  if (move && game.status === "running") {
+
+  if (move?.error) {
+    elements.aiSource.textContent = move.error;
+    game.status = "gameover";
+  } else if (move && game.status === "running") {
     lastDecision = move;
     recommendation = {
       type: state.current.type,
@@ -210,14 +215,14 @@ async function maybeRunAi() {
       lines: state.lines,
       move,
     });
-    game.applyMoveTarget(move);
+    if (!game.applyMoveTarget(move)) game.status = "gameover";
   }
   aiPending = false;
 }
 
 function updateRecommendation() {
   const state = game.getState();
-  const move = ai.findBestMove(state, { depth: Number(elements.depthSelect.value) });
+  const move = ai.findBestMove(state, { mode: "dt10" });
   if (!move || !state.current) {
     recommendation = null;
     return;
@@ -272,14 +277,25 @@ function updateDecision(move) {
   elements.moveRotation.textContent = `${move.rotation * 90}°`;
   elements.moveScore.textContent = Number(move.eval ?? move.score).toFixed(3);
   const f = move.features ?? {};
-  elements.moveFeatures.textContent = `高${fmt(f.aggregateHeight)} 洞${fmt(f.holes)} 崎${fmt(f.bumpiness)} 消${fmt(f.completeLines)}`;
+  elements.moveFeatures.textContent = [
+    `高${fmt(f.landingHeight)}`,
+    `蚀${fmt(f.erodedPieceCells)}`,
+    `行转${fmt(f.rowTransitions)}`,
+    `列转${fmt(f.columnTransitions)}`,
+    `洞${fmt(f.holes)}`,
+    `井${fmt(f.boardWells)}`,
+    `洞深${fmt(f.holeDepth)}`,
+    `洞行${fmt(f.rowsWithHoles)}`,
+    `多样${fmt(f.diversity)}`,
+  ].join(" ");
 }
 
 async function runBenchmark() {
   if (benchmarkRunning) return;
   if (elements.modeSelect.value === "human") {
     elements.benchmarkState.textContent = "未开始";
-    elements.benchmarkOutput.textContent = "AI 评测属于 AI 算法模式。请先切换到 AI 算法模式（WebSocket），再运行评测。";
+    elements.benchmarkOutput.textContent =
+      "AI 评测属于 AI 算法模式。请先切换到 AI 算法模式（WebSocket），再运行评测。";
     return;
   }
   benchmarkRunning = true;
@@ -291,14 +307,13 @@ async function runBenchmark() {
   elements.depthSelect.disabled = true;
   elements.benchGames.disabled = true;
   const games = Math.max(1, Math.min(10000, Number(elements.benchGames.value) || 10000));
-  const depth = Number(elements.depthSelect.value);
   const seed = elements.seedInput.value.trim() || "benchmark";
   const results = [];
   elements.benchmarkOutput.textContent = "";
 
   for (let i = 0; i < games && !benchmarkCancel; i += 1) {
     elements.benchmarkState.textContent = `${i + 1}/${games}`;
-    const result = await playAiGameAsync(`${seed}-${i + 1}`, depth);
+    const result = await playAiGameAsync(`${seed}-${i + 1}`);
     if (result.completed) results.push(result);
     elements.benchmarkOutput.textContent = summarizeBenchmark(results, false, benchmarkCancel);
     await sleep(0);
@@ -315,21 +330,29 @@ async function runBenchmark() {
   updateModeUi();
 }
 
-async function playAiGameAsync(seed, depth) {
+async function playAiGameAsync(seed) {
   const sim = new TetrisGame({ seed });
   sim.start();
   let guard = 0;
-  const maxPieces = 20000;
+  const maxPieces = 100000;
   let stopped = false;
   while (sim.status === "running" && guard < maxPieces && !benchmarkCancel) {
-    for (let batch = 0; batch < 120 && sim.status === "running" && guard < maxPieces && !stopped && !benchmarkCancel; batch += 1) {
-      const state = sim.getState();
-      const move = ai.findBestMove(state, { depth });
+    for (
+      let batch = 0;
+      batch < 120 && sim.status === "running" && guard < maxPieces && !stopped && !benchmarkCancel;
+      batch += 1
+    ) {
+      const move = ai.findBestMove(sim.getState(), { mode: "dt10" });
       if (!move) {
         stopped = true;
+        sim.status = "gameover";
         break;
       }
-      sim.applyMoveTarget(move);
+      if (!sim.applyMoveTarget(move)) {
+        stopped = true;
+        sim.status = "gameover";
+        break;
+      }
       guard += 1;
     }
     if (stopped) break;
@@ -360,15 +383,16 @@ function summarizeBenchmark(results, final, canceled = false) {
   const max = Math.max(...scores);
   const min = Math.min(...scores);
   const capped = results.filter((result) => result.capped).length;
+  const truncated = capped > 0 ? "（存在截断，不能作为正式均值）" : "";
   return [
-    `${canceled ? "评测已停止" : final ? "评测完成" : "评测中"}：${lines.length} 局完整结果`,
+    `${canceled ? "评测已停止" : final ? "评测完成" : "评测中"}：${lines.length} 局完整结果${truncated}`,
     `分数均值：${avgScore.toFixed(4)}    分数方差：${scoreVariance.toFixed(4)}`,
-    `最高分：${max}    最低分：${min}`,
+    `标准差：${stddev(scores).toFixed(4)}    最高分：${max}    最低分：${min}`,
     `平均消行：${avgLines.toFixed(4)}    平均方块数：${avgPieces.toFixed(2)}`,
     `预算结束：${capped}/${lines.length}`,
     `AI 版本：${AI_VERSION}`,
-    `规则：10×10 布局，7 种方块独立等概率刷新，消除 1 行得 1 分`,
-    `说明：评测是独立批量仿真实验；WebSocket 用于演示 JSON 接口落子`,
+    "规则：10x10 布局，7 种方块独立等概率刷新，消除 1 行得 1 分",
+    "说明：评测是独立批量仿真实验；WebSocket 用于演示 JSON 接口。",
   ].join("\n");
 }
 
@@ -378,10 +402,7 @@ function average(values) {
 }
 
 function stddev(values) {
-  if (values.length < 2) return 0;
-  const avg = average(values);
-  const variance = average(values.map((value) => (value - avg) ** 2));
-  return Math.sqrt(variance);
+  return Math.sqrt(variance(values));
 }
 
 function variance(values) {
@@ -402,8 +423,8 @@ function updateModeUi() {
     return;
   }
   elements.benchmarkBtn.disabled = humanMode;
-  elements.benchmarkBtn.title = humanMode ? "AI 评测只在 AI 算法模式下运行" : "";
-  elements.aiSource.textContent = humanMode ? "人类模式推荐落点" : "Python WebSocket AI";
+  elements.benchmarkBtn.title = humanMode ? "AI 评测只在 AI 算法模式中运行" : "";
+  elements.aiSource.textContent = humanMode ? "人类模式推荐落点" : AI_VERSION;
 }
 
 function sleep(ms) {
