@@ -158,6 +158,11 @@ export class TetrisAI {
     this.positionalWeights = Object.entries(this.weights).filter(
       ([key]) => !PER_MOVE_FEATURES.includes(key),
     );
+    // Beam width for look-ahead: at each internal node only the top-N placements
+    // (ranked by the cheap greedy score) are expanded deeper. The best move's
+    // first step is almost always among the greedy leaders, so this gives a big
+    // speed-up at depth >= 2 with negligible score loss. Does not affect depth 1.
+    this.beamWidth = options.beamWidth ?? 14;
   }
 
   scorePerMove(features) {
@@ -209,7 +214,27 @@ export class TetrisAI {
     const type = queue[index];
     const isLeaf = index === queue.length - 1;
     const placements = enumeratePlacements(board, type);
-    let best = null;
+
+    if (isLeaf) {
+      // Final board: score both per-move reward and positional quality on it.
+      let best = null;
+      for (const placement of placements) {
+        const applied = applyPlacement(board, type, placement.rotation, placement.x);
+        if (!applied) continue;
+        const features = evaluateBoard(applied.board, applied.lines, {
+          cells: placement.cells,
+          clearedRows: applied.clearedRows,
+        });
+        let value = this.scorePerMove(features) + this.scorePositional(features);
+        if (applied.topOut) value -= TOP_OUT_PENALTY;
+        if (!best || value > best.score) best = { placement, score: value, features };
+      }
+      return best;
+    }
+
+    // Internal node: rank every placement by the cheap greedy score, then only
+    // expand the top `beamWidth` of them into the deeper (next-piece) search.
+    const candidates = [];
     for (const placement of placements) {
       const applied = applyPlacement(board, type, placement.rotation, placement.x);
       if (!applied) continue;
@@ -217,20 +242,25 @@ export class TetrisAI {
         cells: placement.cells,
         clearedRows: applied.clearedRows,
       });
+      const perMove = this.scorePerMove(features);
+      let greedy = perMove + this.scorePositional(features);
+      if (applied.topOut) greedy -= TOP_OUT_PENALTY;
+      candidates.push({ placement, board: applied.board, features, perMove, greedy, topOut: applied.topOut });
+    }
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.greedy - a.greedy);
+
+    const limit = Math.min(this.beamWidth, candidates.length);
+    let best = null;
+    for (let i = 0; i < limit; i += 1) {
+      const c = candidates[i];
       // Reward features of the piece we just placed accumulate down the path.
-      let value = this.scorePerMove(features);
-      if (applied.topOut) value -= TOP_OUT_PENALTY;
-      if (isLeaf) {
-        // Positional quality only matters for the board we actually stop on.
-        value += this.scorePositional(features);
-      } else {
-        const child = this.search(applied.board, queue, index + 1);
-        if (child) value += child.score;
-        else value -= TOP_OUT_PENALTY;
-      }
-      if (!best || value > best.score) {
-        best = { placement, score: value, features };
-      }
+      let value = c.perMove;
+      if (c.topOut) value -= TOP_OUT_PENALTY;
+      const child = this.search(c.board, queue, index + 1);
+      if (child) value += child.score;
+      else value -= TOP_OUT_PENALTY;
+      if (!best || value > best.score) best = { placement: c.placement, score: value, features: c.features };
     }
     return best;
   }

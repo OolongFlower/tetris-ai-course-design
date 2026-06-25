@@ -72,6 +72,11 @@ PER_MOVE_FEATURES = ("landingHeight", "erodedPieceCells", "completeLines")
 # Locking a piece above the visible board is an imminent top-out; avoid it.
 TOP_OUT_PENALTY = 1e6
 
+# Beam width for look-ahead: each internal node only expands its top-N placements
+# (ranked by the greedy score). Big speed-up at depth >= 2, negligible quality
+# loss. Ignored at depth 1 (a single ply has no deeper node to prune).
+BEAM_WIDTH = 14
+
 AI_VERSION = "10x10-lookahead-v3"
 
 
@@ -247,7 +252,31 @@ def search(board, queue, index):
     """queue[index] is placed at this level; deeper levels place later pieces."""
     piece_type = queue[index]
     is_leaf = index == len(queue) - 1
-    best = None
+
+    if is_leaf:
+        best = None
+        for placement in enumerate_placements(board, piece_type):
+            applied = apply_placement(board, piece_type, placement["rotation"], placement["x"])
+            if not applied:
+                continue
+            cells = [
+                (placement["x"] + dx, placement["y"] + dy)
+                for dx, dy in SHAPES[piece_type][placement["rotation"]]
+            ]
+            features = evaluate_board(
+                applied["board"],
+                applied["lines"],
+                {"cells": cells, "clearedRows": applied["clearedRows"]},
+            )
+            value = score_per_move(features) + score_positional(features)
+            if applied["topOut"]:
+                value -= TOP_OUT_PENALTY
+            if best is None or value > best["score"]:
+                best = {"placement": placement, "score": value, "features": features}
+        return best
+
+    # Internal node: rank placements by greedy score, expand only the top beam.
+    candidates = []
     for placement in enumerate_placements(board, piece_type):
         applied = apply_placement(board, piece_type, placement["rotation"], placement["x"])
         if not applied:
@@ -261,19 +290,36 @@ def search(board, queue, index):
             applied["lines"],
             {"cells": cells, "clearedRows": applied["clearedRows"]},
         )
-        value = score_per_move(features)
+        per_move = score_per_move(features)
+        greedy = per_move + score_positional(features)
         if applied["topOut"]:
+            greedy -= TOP_OUT_PENALTY
+        candidates.append(
+            {
+                "placement": placement,
+                "board": applied["board"],
+                "features": features,
+                "perMove": per_move,
+                "greedy": greedy,
+                "topOut": applied["topOut"],
+            }
+        )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c["greedy"], reverse=True)
+
+    best = None
+    for candidate in candidates[:BEAM_WIDTH]:
+        value = candidate["perMove"]
+        if candidate["topOut"]:
             value -= TOP_OUT_PENALTY
-        if is_leaf:
-            value += score_positional(features)
+        child = search(candidate["board"], queue, index + 1)
+        if child:
+            value += child["score"]
         else:
-            child = search(applied["board"], queue, index + 1)
-            if child:
-                value += child["score"]
-            else:
-                value -= TOP_OUT_PENALTY
+            value -= TOP_OUT_PENALTY
         if best is None or value > best["score"]:
-            best = {"placement": placement, "score": value, "features": features}
+            best = {"placement": candidate["placement"], "score": value, "features": candidate["features"]}
     return best
 
 

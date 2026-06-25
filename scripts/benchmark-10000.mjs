@@ -6,7 +6,10 @@ const maxPieces = Number(process.argv[3] ?? 20000);
 // Search depth: 1 = greedy (fast, scales to 10000 games); 2+ looks ahead using
 // the known next pieces and plays near-perfectly, but costs much more time.
 const depth = Number(process.argv[4] ?? 1);
-const ai = new TetrisAI();
+// Beam width (5th arg): how many placements each look-ahead level expands.
+// Smaller = faster but slightly riskier at depth >= 2. Ignored at depth 1.
+const beamWidth = Number(process.argv[5] ?? 14);
+const ai = new TetrisAI({ beamWidth });
 const scores = [];
 const pieces = [];
 let capped = 0;
@@ -51,6 +54,7 @@ console.log(
     {
       games,
       depth,
+      beamWidth: depth > 1 ? beamWidth : undefined,
       rule: "10x10, uniform 7-piece random, 1 point per cleared line",
       mean,
       variance: varScore,
