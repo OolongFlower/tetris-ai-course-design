@@ -4,3 +4,7 @@ __pycache__/
 *.log
 .DS_Store
 tetris-ai-log-*.json
+benchmark-before.json
+parity-before.json
+benchmark-*.csv
+benchmark-*.json

@@ -92,6 +92,7 @@ export class TetrisGame {
   constructor(options = {}) {
     this.width = options.width ?? BOARD_WIDTH;
     this.height = options.height ?? BOARD_HEIGHT;
+    this.profile = options.profile ?? null;
     this.reset(options.seed ?? Date.now());
   }
 
@@ -114,8 +115,14 @@ export class TetrisGame {
   }
 
   refillQueue() {
+    const startedAt = this.profile ? (globalThis.performance?.now?.() ?? Date.now()) : 0;
     while (this.queue.length < 5) {
       this.queue.push(PIECE_TYPES[this.rng.int(PIECE_TYPES.length)]);
+    }
+    if (this.profile) {
+      this.profile.rngAndGenerationMs =
+        (this.profile.rngAndGenerationMs ?? 0) +
+        ((globalThis.performance?.now?.() ?? Date.now()) - startedAt);
     }
   }
 

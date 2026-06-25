@@ -10,8 +10,12 @@
     "test:features": "node scripts/test-dt10-features.mjs",
     "test:consistency": "node scripts/test-dt10-consistency.mjs",
     "test:cross": "node scripts/test-cross-language.mjs",
+    "test:parallel": "node scripts/test-parallel-consistency.mjs",
     "test:dt10": "npm run test:features && npm run test:consistency && npm run test:cross",
-    "benchmark": "node scripts/benchmark-10000.mjs",
+    "profile": "node scripts/profile-benchmark.mjs",
+    "parity": "node scripts/parity-baseline.mjs",
+    "benchmark": "node scripts/benchmark-parallel.mjs",
+    "benchmark:serial": "node scripts/benchmark-10000.mjs",
     "benchmark:compare": "node scripts/benchmark-compare.mjs"
   }
 }

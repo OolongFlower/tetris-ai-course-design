@@ -34,6 +34,14 @@ export const LEGACY_V2_WEIGHTS = {
 
 export const DEFAULT_WEIGHTS = DT10_WEIGHTS;
 
+function nowMs() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
+function addProfile(profile, key, value) {
+  if (profile) profile[key] = (profile[key] ?? 0) + value;
+}
+
 export function enumeratePlacements(board, type) {
   if (!type) return [];
   const width = board[0].length;
@@ -278,6 +286,7 @@ export class TetrisAI {
   }
 
   findBestMove(state, options = {}) {
+    const profile = options.profile;
     const board = cloneBoard(state.board);
     const current = typeof state.current === "string" ? { type: state.current } : state.current;
     const type = current?.type;
@@ -285,8 +294,8 @@ export class TetrisAI {
     const mode = options.mode ?? this.mode;
     const result =
       mode === "legacy-v2"
-        ? this.searchLegacy(board, type)
-        : this.searchDt10(board, type);
+        ? this.searchLegacy(board, type, profile)
+        : this.searchDt10(board, type, profile);
     if (!result) return null;
     return {
       type: "move",
@@ -302,11 +311,18 @@ export class TetrisAI {
     };
   }
 
-  searchDt10(board, type) {
+  searchDt10(board, type, profile = null) {
     let best = null;
-    for (const placement of enumeratePlacements(board, type)) {
+    const enumerateStartedAt = nowMs();
+    const placements = enumeratePlacements(board, type);
+    addProfile(profile, "enumerateMs", nowMs() - enumerateStartedAt);
+    addProfile(profile, "candidatePlacements", placements.length);
+    for (const placement of placements) {
+      const applyStartedAt = nowMs();
       const applied = placePieceOnBoard(board, type, placement.rotation, placement.x, placement.y);
+      addProfile(profile, "applyPlacementMs", nowMs() - applyStartedAt);
       if (!applied || applied.topOut) continue;
+      const featuresStartedAt = nowMs();
       const features = getDt10Features(applied.board, {
         type,
         rotation: placement.rotation,
@@ -316,6 +332,7 @@ export class TetrisAI {
         clearedRows: applied.clearedRows,
         linesCleared: applied.lines,
       });
+      addProfile(profile, "featuresMs", nowMs() - featuresStartedAt);
       const score = scoreFeatures(features, DT10_WEIGHTS);
       if (isBetterCandidate(best, placement, score)) {
         best = { placement, score, features };
@@ -324,16 +341,24 @@ export class TetrisAI {
     return best;
   }
 
-  searchLegacy(board, type) {
+  searchLegacy(board, type, profile = null) {
     let best = null;
-    for (const placement of enumeratePlacements(board, type)) {
+    const enumerateStartedAt = nowMs();
+    const placements = enumeratePlacements(board, type);
+    addProfile(profile, "enumerateMs", nowMs() - enumerateStartedAt);
+    addProfile(profile, "candidatePlacements", placements.length);
+    for (const placement of placements) {
+      const applyStartedAt = nowMs();
       const applied = placePieceOnBoard(board, type, placement.rotation, placement.x, placement.y);
+      addProfile(profile, "applyPlacementMs", nowMs() - applyStartedAt);
       if (!applied) continue;
+      const featuresStartedAt = nowMs();
       const features = getLegacyFeatures(applied.board, {
         cells: placement.cells,
         clearedRows: applied.clearedRows,
         linesCleared: applied.lines,
       });
+      addProfile(profile, "featuresMs", nowMs() - featuresStartedAt);
       const score = scoreFeatures(features, LEGACY_V2_WEIGHTS);
       if (isBetterCandidate(best, placement, score)) {
         best = { placement, score, features };
